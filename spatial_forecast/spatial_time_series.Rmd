@@ -1,0 +1,204 @@
+---
+title: "Spatial Time Series Analysis: Field Chlorophyll Index Red Edge"
+
+output: html_notebook
+---
+
+Band 8 -NIR
+Band 6 - Vegetation Red Edge
+Chlorophyll Index Red Edge = (NIR/Red Edge)-1 = (Band_8/Band_6) -1
+```{r, setup}
+library(reticulate)
+# py_install("pandas")
+#py_install("matplotlib")
+#py_install("scipy")
+# conda_install(
+#   envname = NULL,
+#   "pydmd",
+#   forge = TRUE,
+#   channel = character(),
+#   pip = TRUE,
+#   pip_options = character(),
+#   pip_ignore_installed = FALSE,
+#   conda = "auto",
+#   python_version = NULL,
+# )
+# conda_install(
+#   envname = NULL,
+#   "pysindy",
+#   forge = TRUE,
+#   channel = character(),
+#   pip = TRUE,
+#   pip_options = character(),
+#   pip_ignore_installed = FALSE,
+#   conda = "auto",
+#   python_version = NULL,
+# )
+reticulate::py_config()
+```
+
+```{r}
+library(sp)
+
+#Import cotton yeild
+cotton_yield<-read.csv('C:/Users/cjon377/Desktop/LSU/AGRO_4092_data/project/hardwick/cotton_yield2019_filtered.csv')
+
+#Convert to spatial points
+xy <- data.frame(ID=1:112660,cotton_yield$Long,cotton_yield$Lat,cotton_yield$dry_yield)
+gc()
+
+coordinates(xy) <- c("cotton_yield.Long", "cotton_yield.Lat") #get coordinates
+proj4string(xy) <- CRS("+proj=longlat +zone=15 +datum=WGS84")  # set projection
+xy <- spTransform(xy, CRS("+proj=utm +zone=15 ellps=WGS84")) #transform
+```
+
+```{r}
+library(raster)
+###Get all the file paths for each image
+get_file_path<-function(file_path){
+  rasters<-as.factor(list.files(path = file_path)) #get raster names
+  raster_list<-as.data.frame(table(rasters)) #check for duplicates 
+  all_files<-gsub(" ", "/", paste(file_path,rasters)) #paste file path to file names
+  return(all_files)
+  
+}
+
+
+###Note to self
+##would need a function to order images, but they are order in this case
+##see soy analysis mato_grosso_soy
+
+#Convert them to a list of rasters
+get_rasters<-function(rasters_by_list){
+  raster_data<-list()
+  for(j in 1:length(rasters_by_list)){
+    raster_data[j]<-raster(rasters_by_list[j]) ##import files by name to raster
+  }
+  return(raster_data)
+}
+
+#Band 6 - Vegetation Red Edge
+band_6_path<-'C:/Users/cjon377/Desktop/LSU/AGRO_4092_data/project/band_6' 
+band_6_files<-get_file_path(band_6_path) #get list of files
+options(warn = -1)
+band_6<-get_rasters(band_6_files) #import and convert to rasters (into list)
+
+band_6<-crop(stack(band_6),xy) #stack the rasters and crop by the yield map
+band_6_p<-extract(band_6,xy) #use only coords that are from the yield map
+
+#Band 8 -NIR (same steps as Band 6) (name process)
+band_8_path<-'C:/Users/cjon377/Desktop/LSU/AGRO_4092_data/project/band_8'
+band_8_files<-get_file_path(band_8_path)
+options(warn = -1)
+band_8<-get_rasters(band_8_files)
+
+band_8<-crop(stack(band_8),xy)
+band_8_p<-extract(band_8,xy)
+
+###Chlorophyll Index Red Edge = (NIR/Red Edge)-1 = (Band_8/Band_6) -1
+cire<-(band_8_p/band_6_p)-1
+
+##Long and lats
+longlat<-na.omit(data.frame(cotton_yield$Long,cotton_yield$Lat,cire)) #need to match the long lat values with cire and THEN remove the na values
+longlat<-longlat[,c(1,2)]
+names(longlat)<-c("Long","Lat")
+
+dry_yield<-na.omit(data.frame(cotton_yield$dry_yield,cire))
+dry_yield <-dry_yield$cotton_yield.dry_yield
+#names(dry_yield) <-c("dry_yield")
+
+cire<-na.omit(cire)# must be done after long lat, now remove na values
+
+### Use raster images (can be band 6 or 8) to set the dimensions of crop yield raster
+### Its going to be the same resolution as the Sentinel images
+r<-rasterize(xy, y=stack(band_6), field=xy$cotton_yield.dry_yield, fun=mean)
+
+#clean up
+rm(band_8,band_6_path,band_8_path,band_6_files,band_8_files,band_6_p,band_8_p)
+gc()
+#keep band 6 as reference raster
+```
+
+```{python}
+import pandas as pd
+import numpy as np
+#import scipy
+#import scipy.integrate
+#from matplotlib import animation
+from IPython.display import HTML
+from matplotlib import pyplot as plt
+from pydmd import DMD
+#from scipy.linalg import hankel
+```
+
+```{python}
+dmd = DMD(svd_rank=17, tlsq_rank=0, exact=True, opt=True).fit(r.cire)
+```
+
+```{python}
+dmd.plot_eigs()
+plt.clf()
+```
+
+```{python}
+dmd.modes.real.shape
+dmd.dynamics.shape
+
+for mode in dmd.modes.T:
+    plt.plot(np.linspace(-5, 5, 112573), mode.real)
+    plt.title('Modes')
+plt.show()
+plt.clf()
+
+for dynamic in dmd.dynamics:
+    plt.plot(np.linspace(0, 1, 19), dynamic.real)
+    plt.title('Dynamics')
+plt.show()
+plt.clf()
+```
+
+```{python}
+recon_data=dmd.reconstructed_data.real
+recon_data.shape
+```
+
+```{r}
+plot(cire,py$recon_data,xlab = "CIRE",ylab = "CIRE Reconstruction")
+```
+
+```{r}
+###Visualize the data and reconstruction 
+tr<-raster(py$recon_data) 
+tr2<-raster(cire)
+plot(tr)
+plot(tr2)
+
+###Now map it back to the GPS coords
+options(warn = -1)
+recon<-list()
+for(j in 1:ncol(py$recon_data)){
+  
+  recon[j]<-rasterize(xy, y=band_6, field=py$recon_data[,j], fun=mean)
+}
+recon<-stack(recon)
+plot(recon)
+
+options(warn = -1)
+true_layers<-list()
+for(k in 1:ncol(cire)){
+  
+  true_layers[k]<-rasterize(xy, y=band_6, field=cire[,k], fun=mean)
+}
+true_layers<-stack(true_layers)
+plot(true_layers)
+
+###Look at crop yield for visual comparison 
+plot(r)
+```
+
+```{r}
+### Look at crude linear model
+plot(cire[,11],dry_yield,xlab = "CIRE",ylab = "Dry Yield") #True data
+plot(py$recon_data[,11],dry_yield,xlab = "CIRE Reconstruction",ylab = "Dry Yield") #Recon data
+```
+
