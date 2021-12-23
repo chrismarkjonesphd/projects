@@ -1,0 +1,449 @@
+---
+title: "Forcasting for Decision Support Systems"
+output: html_notebook
+  
+---
+
+```{r echo = FALSE}
+library(reticulate)
+#py_install("pandas")
+#py_install("matplotlib")
+#conda_install("r-reticulate", "scipy")
+#py_install("future")
+#py_install("sphinx")
+#py_install("nose")
+#py_install("plotly")
+#conda_install(
+  #envname = NULL,
+  #"pydmd",
+  #forge = TRUE,
+  #channel = character(),
+  #pip = TRUE,
+  #pip_options = character(),
+  #pip_ignore_installed = FALSE,
+  #conda = "auto",
+  #python_version = NULL,
+#)
+#conda_install(
+  #envname = NULL,
+  #"pysindy",
+  #forge = TRUE,
+  #channel = character(),
+  #pip = TRUE,
+  #pip_options = character(),
+  #pip_ignore_installed = FALSE,
+  #conda = "auto",
+  #python_version = NULL,
+#)
+reticulate::py_config()
+```
+
+```{r include=FALSE}
+library(rgl) #For 3d plots 
+library(car) #For 3d plots
+library(ggplot2) #For plots 
+library("PerformanceAnalytics")
+library("nonlinearTseries") #For Taken's Theorem 
+library(forecast) #For modeling and prediction
+library(lmtest) #To test parameter significance
+```
+
+Import time series data
+
+```{r echo=TRUE}
+###BenHur
+b<-read.csv('BenHur.csv')
+b<-b[6:2210,] #Start at midnight
+
+###Chase
+ch<-read.csv('Chase.csv')
+ch<-ch[1:8808,] #Focus on the first year
+
+```
+
+```{r echo=TRUE}
+###Benhur max wind speed###
+for (i in 1:9){
+  if (i != 8){
+    graphics.off()
+    lag.plot(b$Avg.Wind.Speed..mph.,lag=i)
+  }
+}
+```
+
+```{r echo=TRUE}
+soil_1<-b$Avg.Soil.Temp..F. #Average Soil Temperature in F
+###Benhur average soil temp s=1
+s<-1
+for (j in 1:9){
+  if (j != 8){
+    graphics.off()
+    lag.plot(get(paste('soil_',s,sep = '')),lag=j)
+  }
+}
+```
+
+Functional analysis: ARIMA method
+
+Look at fourier frequency and maybe box.cox
+```{r}
+###BenHur###
+options(warn=-1) #make warnings shut up
+chart.Correlation(b[,c(2:9)], histogram=F, pch=19,method = c('spearman'))
+air_1<-b$Avg.Air.Temp..F. #Average Air Temperature in F
+
+###Benhur at a week
+autoplot(ts(soil_1[1:168])) + ylab('Average Soil Temperature') + xlab('Hours') + ggtitle('Benhur: 5/30/2021 12:57AM - 6/6/2021 2:57 AM')
+
+#Plot Soil Temp and look at lagged differences
+autoplot(ts(soil_1)) + ylab('Average Soil Temperature') + xlab('Hours') + ggtitle('Benhur: 5/30/2021 12:57AM - 8/29/2021 11:57PM')
+ts(soil_1) %>% diff(lag=24) %>% ggtsdisplay()
+
+#Plot Air Temp and look at lagged differences 
+autoplot(ts(air_1)) + ylab('Average Air Temperature') + xlab('Hours') + ggtitle('Benhur: 5/30/2021 12:57AM - 8/29/2021 11:57PM')
+ts(air_1) %>% diff(lag=24) %>% ggtsdisplay()
+
+#Plot Soil Temp with cox cox and look at lagged differences
+autoplot(ts(BoxCox(soil_1, lambda = 'auto'))) + ylab('Average Soil Temperature') + xlab('Hours') + ggtitle('Benhur: 5/30/2021 12:57AM - 8/29/2021 11:57PM')
+ts(BoxCox(soil_1, lambda = 'auto')) %>% diff(lag=24) %>% ggtsdisplay()
+
+
+#Construct ARIMA with regression 
+soil_f1<-auto.arima(soil_1[1657:2157],xreg = air_1[1657:2157] ,stationary = FALSE,seasonal=TRUE)
+soil_f1 #model
+coeftest(soil_f1) #Ljung-Box test
+checkresiduals(soil_f1) #residuals 
+
+soil_f2<-auto.arima(soil_1[1657:2157],stationary = FALSE, seasonal=TRUE)
+soil_f2 #model
+coeftest(soil_f2) #Ljung-Box test
+checkresiduals(soil_f2) #residuals 
+
+#Forcast with model 2
+soil_1[1657:2157] %>% forecast(model=soil_f2 ,h=48) %>% autoplot() 
+
+#Forecast with model 2 vs actual
+soil_1_forecast <- forecast(soil_1[1657:2157],model=soil_f2, h = 48)  
+autoplot(soil_1_forecast) + autolayer(soil_1_forecast, series='Predicted') + autolayer(ts(soil_1[1657:2205]), series='Actual') + ylab('Average Air Temperature') + xlab('Hours') 
+
+```
+
+
+```{r echo=TRUE}
+
+###Chase###
+options(warn=-1) #make warnings shut up
+chart.Correlation(ch[,c(2:9)], histogram=F, pch=19,method = c('spearman'))
+soil_2<-ch$Avg.Soil.Temp..F. #Average Soil Temperature in F
+air_2<-ch$Avg.Air.Temp..F. #Average Air Temperature in F
+
+#Plot Soil Temp and look at lagged differences
+autoplot(ts(soil_2)) + ylab('Average Soil Temperature') + xlab('Hours') + ggtitle('Chase: 1/1/2020 12:57 - 12/30/2020 11:57')
+ts(soil_2) %>% diff(lag=24) %>% ggtsdisplay()
+
+#Plot Air Temp and look at lagged differences 
+autoplot(ts(air_2)) + ylab('Average Air Temperature') + xlab('Hours') + ggtitle('Chase: 1/1/2020 12:57 - 12/30/2020 11:57')
+ts(air_2) %>% diff(lag=24) %>% ggtsdisplay()
+
+
+#Construct ARIMA with regression 
+soil_f1_2<-auto.arima(soil_2[8000:8760],xreg = air_2[8000:8760] ,stationary = FALSE,seasonal=TRUE)
+soil_f1_2 #model
+coeftest(soil_f1_2) #Ljung-Box test
+checkresiduals(soil_f1_2) #residuals 
+
+soil_f2_2<-auto.arima(soil_2[8000:8760],stationary = FALSE, seasonal=TRUE)
+soil_f2_2 #model
+coeftest(soil_f2_2) #Ljung-Box test
+checkresiduals(soil_f2_2) #residuals 
+
+
+#Forecast with model 2
+soil_2[8000:8760] %>% forecast(model=soil_f2_2,h=48) %>% autoplot() 
+
+#Forecast with model 2 vs actual
+soil_2_forecast <- forecast(soil_2[8000:8760],model=soil_f2_2, h = 48)  
+autoplot(soil_2_forecast) + autolayer(soil_2_forecast, series='Predicted') + autolayer(ts(soil_2[8000:8808]), series='Actual') + ylab('Average Air Temperature') + xlab('Hours') 
+```
+
+
+
+```{r echo=TRUE}
+gc() #clear space for memory
+memory.limit(size=10000000000000)
+  
+takens<-function(x,acf,ami,max_dim){
+  
+  gc()
+  memory.limit(size=10000000000000)
+  
+  old_par <- par(mfrow = c(1,2))
+  #tau_acf <- timeLag(x, technique = "acf",
+                     #lag.max = acf, do.plot = F)
+  tau_ami <- timeLag(x, technique = "ami", 
+                     lag.max = ami, do.plot = F)
+  emb_dim <- estimateEmbeddingDim(x,time.lag = tau_ami,
+                                  max.embedding.dim = max_dim)
+  taken <- buildTakens(x, embedding.dim = emb_dim,
+                     time.lag = tau_ami)
+  return(taken)
+  
+}
+
+plotter1<-function(embeded,x,y,z){
+  
+  col_day<-colorRampPalette(c("darkgreen","red","green"))
+  col_day<-col_day(24)
+  
+  col_year<-colorRampPalette(c("red","blue"))
+  col_year<-col_year(length(embeded[,1]))
+  
+  plt<-scatter3d(x = embeded[,x], 
+            y = embeded[,y], 
+            z = embeded[,z],
+            point.col = col_day[seq(1:24)],
+            surface = F)
+  aspect3d(1,1,1)
+
+
+}
+
+plotter2<-function(embeded,x,y,z){
+  
+  col_day<-colorRampPalette(c("darkgreen","red","green"))
+  col_day<-col_day(24)
+  
+  col_year<-colorRampPalette(c("red","blue"))
+  col_year<-col_year(length(embeded[,1]))
+  
+  scatter3d(x = embeded[,x], 
+            y = embeded[,y], 
+            z = embeded[,z],
+            point.col = col_year[seq(1:length(embeded[,1]))],
+            surface = F)
+  aspect3d(1,1,1)
+
+}
+  
+
+```
+Taken's theorem for time delay embedding 
+
+```{r testgl, echo=TRUE}
+
+tak_b<-takens(soil_1,100,100,15)
+
+plotter1(tak_b,1,2,3)
+rglwidget()
+
+plotter2(tak_b,1,2,3)
+rglwidget()
+
+plotter1(tak_b,4,5,6)
+rglwidget()
+
+plotter2(tak_b,4,5,6)
+rglwidget()
+
+plotter1(tak_b,1,3,5)
+rglwidget()
+
+plotter2(tak_b,1,3,5)
+rglwidget()
+
+plotter1(tak_b,2,4,6)
+rglwidget()
+
+plotter2(tak_b,2,4,6)
+rglwidget()
+
+###Chase average soil temp
+gc()
+memory.limit(size=10000000000000)
+
+tak_c<-takens(soil_2,100,100,15)
+
+plotter1(tak_c,1,2,3)
+rglwidget()
+
+plotter2(tak_c,1,2,3)
+rglwidget()
+
+gc()
+memory.limit(size=10000000000000)
+```
+
+```{r}
+#remove stationarity 
+#-1 lag difference
+soil_1_diff<-diff(soil_1,lag=1)
+plot(soil_1_diff,type = 'l')
+
+gc()
+memory.limit(size=10000000000000)
+
+tak_b_2<-takens(soil_1_diff,100,100,15)
+
+plotter1(tak_b_2,1,3,5) #now you just get a blob still clustered though
+#there is still an attractor at the center
+#remove stationarity 
+#-1 lag difference
+soil_2_diff<-diff(soil_2,lag=1)
+plot(soil_2_diff,type = 'l')
+
+gc()
+memory.limit(size=10000000000000)
+
+tak_c_2<-takens(soil_2_diff,100,100,15)
+
+plotter1(tak_c_2,1,2,3) #now you just get a blob still clustered though
+
+
+```
+```{r}
+Acf(soil_1)
+Acf(soil_1_diff)
+Acf(soil_2)
+Acf(soil_2_diff)
+#very much indicates this is not a random walk
+Box.test(soil_1_diff)
+#hourly changes in tempreture is deffinatly not a random walk correlated with it's previous times. 
+
+rm(tak_b_2,tak_c_2)
+```
+
+
+```{python each = FALSE}
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib.cm import rainbow
+import numpy as np
+from scipy.integrate import odeint
+from scipy.io import loadmat
+import pysindy as ps
+import plotly.graph_objects as go
+from sklearn import linear_model #for lasso
+```
+
+```{python}
+dt = 1 # notice that this is 1 hour
+#if smaller make sure to notice the coefficients will be on this scale
+
+train=np.delete(r.tak_c, range(3, 8, 1), axis=1) #Use Chase as training set
+
+#Use every other column for Benhur as the testing set
+test=np.delete(r.tak_b, range(1, 9, 2), axis=1)
+test=np.delete(test, range(3, 5, 1), axis=1)
+#r.tak_b[1] 
+#test[1]
+#if you try it with the differences data the coeff are zero with lasso
+np.random.seed(1)
+lasso_optimizer =linear_model.Lasso(alpha=1, max_iter=2000,tol =0.5, fit_intercept=False)
+
+
+model = ps.SINDy(optimizer=lasso_optimizer)
+model.fit(train, t=dt)
+model.print()
+model.score(train)
+model.score(test)
+```
+
+```{python}
+x0=model.equations()[0]
+x0
+
+```
+
+
+```{python}
+#remember these are the derivatives (i think)
+pred=model.predict(test) 
+pred=np.delete(pred,range(1,3,1),1) #derivatives for t
+
+```
+
+```{r}
+#py$pred is the derivatives from time embedings 
+expected<-soil_1[1:2172]+py$pred[1:2172]#x0+dt
+#soil_1[2:1001] x1 true
+plot(expected,soil_1[2:2173]) #x0+dt~x1 vs x1 true
+```
+```{r}
+autoplot(ts(expected)) + autolayer(ts(ts(expected)), series='Predicted') +autolayer(ts(soil_1[2:2173]), series='Actual') + ylab('Average Air Temperature') + xlab('Hours')
+```
+These are fitted values in a way. But note, fitted values are not true forecasts. 
+
+```{r}
+res<-soil_1[2:2173]-expected
+hist(res)
+plot(res,type='l')
+Acf(res)
+Box.test(res,lag=1, fitdf=0, type="Lj") 
+#residuals are not coming from white noise
+
+```
+error ~ N(0,1)
+
+```{python}
+t = np.arange(0,48, dt)
+x0=np.array([86.4,85.0,83.5])
+#x0=test
+simulation=model.simulate(x0,t)
+```
+
+```{r}
+plot(py$simulation)
+plot(py$simulation[,2]) #only giving it 3 coords from time delay
+plotter1(py$simulation,1,2,3)
+rglwidget()
+
+
+autoplot(soil_1_forecast) + autolayer(ts(c(soil_1[1657:2157],py$simulation[,2])), series='Predicted') +autolayer(ts(soil_1[1657:2205]), series='Actual') + ylab('Average Air Temperature') + xlab('Hours') 
+
+```
+```{r}
+library(reticulate)
+reticulate::py_config()
+```
+
+```{python}
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import time
+from pydmd import HODMD
+
+#data = r.soil_1[1500:]
+data = r.soil_1_diff[1500:]
+### you need to remove outliers 
+###notice the anomly between 100 and 250 (when r.soil[0:]), throws off predctions it fits best to the first set of observation
+
+end_time = 400
+y = data[0:end_time]
+hodmd = HODMD(svd_rank=0, tlsq_rank=0, exact=True, opt=True, d=200).fit(y)
+pd.DataFrame(hodmd.atilde) #A tilda
+#pd.DataFrame(hodmd.dynamics)
+#pd.DataFrame(hodmd.modes)
+plt.clf()
+hodmd.plot_eigs()
+
+```
+
+
+```{python}
+#m = 24
+m=168
+hodmd.dmd_time['tend'] = end_time + m
+#plt.plot(hodmd.original_timesteps, y, '.', label='y')
+plt.clf()
+plt.plot(hodmd.original_timesteps, y, '-', label='Training Set')
+plt.plot(np.array([k+end_time for k in range(m)]), data[end_time:end_time+m], '-', label='Real Outcome')
+plt.plot(hodmd.dmd_timesteps, hodmd.reconstructed_data[0].real, '--', label='DMD Output')
+plt.legend()
+plt.show()
+
+```
+
+
+
