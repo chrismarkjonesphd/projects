@@ -1,0 +1,187 @@
+---
+title: "import_clean_merge"
+output: html_notebook
+---
+
+```{r }
+library(readxl)
+library(stringr)
+library(raster)
+library(sf)
+library(sp)
+library(dplyr)
+library(janitor)
+```
+
+Section 1: Import and Merge data 
+```{r}
+setwd('C:/Forest_data')
+#Import forest data
+df<- read_excel("Plot_properties-20201012.xls")
+species <- read_excel("Plants_in_each_plot-20201012.xlsx")
+options(warn=-1) #Tell it to shut up
+ni<-read_excel("TaiwanSpecies20191213.xlsx") #Will need for later use
+
+###Import Elevation Raster
+el<-raster('Taiwan_20m_digital_elevation_model.tif')
+crs(el) <- "+proj=longlat +datum=WGS84 +no_defs + ellps=WGS84 +towgs84 =0,0,0"
+
+###Get Climate Variables 
+clim<-readRDS('All_Climate_Vars.rds', refhook = NULL)
+clim<-clim[-c(1,2)]
+clim<-stack(unlist(clim))
+
+###Rename plot id
+df<- rename(df,"PLOT_ID" ="PLOT ID")
+
+###Make plot id for species data
+species$PLOT_ID<-gsub('.{4}$', '', species$SUBPLOT_ID)
+
+####Merge data
+Merged<-right_join(species,df, by = c("PLOT_ID"))
+```
+
+Section 2: Get Longitude Latitude Coordinate System 
+(Data comes with UTM)
+```{r}
+###Find coords
+xy <- cbind(Merged$x_97,Merged$y_97)
+colnames(xy) <- c('Longitude', 'Latitude')
+coords <- coordinates(xy)
+
+###Current coord system 
+TWD97 <- CRS('+proj=tmerc +lat_0=0 +lon_0=121 +k=0.9999 +x_0=250000 +y_0=0 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs ')
+c97 <- SpatialPoints(coords, TWD97)
+
+###Convert to WGS84
+WGS84 <- CRS('+proj=longlat +ellps=WGS84')
+c84 <- spTransform(c97, WGS84)
+rm(c97,xy,coords,TWD97,WGS84) #CLEAN UP
+
+###Put new Long Lat into Merged data  
+ctran<-as.data.frame(c84)
+Merged$Longitude<-ctran$Longitude
+Merged$Latitude<-ctran$Latitude
+rm(ctran,df,c84,species) #CLEAN UP
+```
+
+Section 3: Get list of Invasive and Native Species by highest frequency 
+```{r}
+###Prepare data
+forest<-data.frame(Merged[c(3,17,18)])
+colnames(forest)<-(c("Name","Longitude","Latitude"))
+
+###Get forest list
+Forest_List<-as.data.frame(table(forest$Name))
+Forest_List<-(Forest_List[order(-Forest_List$Freq),])
+ForList<-Forest_List[which(Forest_List$Freq >= 10),]
+
+###Get invasive status
+### Need ni 
+s_names<-ni[which(ni$kingdom=="Plantae"),] # Get plants 
+invf<-s_names[which(s_names$`alien_status (0: native, 1&2&3: introduced)`==1),]
+rm(s_names,ni) #CLEAN UP
+
+###Split names for comparison
+genus<-list()
+species<-list()
+for(i in 1:nrow(ForList)){
+  nme<-str_split_fixed(ForList[[1]][i], " ", 3)
+  genus[[i]]<-nme[c(1)]
+  species[[i]]<-nme[c(2)]
+}
+
+###Names of Species
+For_Names<-data.frame(unlist(genus),unlist(species))
+colnames(For_Names)<-c("genus","species")
+
+###Find the invasives
+f_invasives<-list()
+for(j in 1:nrow(For_Names)){
+  f_invasives[[j]]<-invf[which(invf$genus==as.character(For_Names$genus[j]) 
+                               & invf$species==as.character(For_Names$species[j])),]
+  
+}
+
+###Extra prepossessing 
+f_invasive_n<-list()
+for(k in 1:length(f_invasives)){
+  if(length(row.names(f_invasives[[k]]))!=0){
+    f_invasive_n[[k]]<-f_invasives[[k]]
+  }else{
+    f_invasive_n[[k]]<-NA
+  }
+}
+
+###Find invasive index
+fi_index<-data.frame(is.na(f_invasive_n)==FALSE)
+colnames(fi_index)<-c("TF")
+inv_index<-which(fi_index$TF=="TRUE")
+
+###Convert to dataframe
+for(m in 1:nrow(fi_index)){
+  if(fi_index$TF[m]=="FALSE"){
+    fi_index$TF[m]<-0
+  }
+}
+
+###Finally get the lists
+ForList$status<-fi_index
+InvListF<-ForList[which(ForList$status==1),] #1 for invasive
+NatListF<-ForList[which(ForList$status==0),]
+
+###Clean up
+rm(ForList,f_invasive_n,f_invasives,fi_index,For_Names,forest,invf,species,genus,Forest_List,nme,i,inv_index,j,k,m)
+gc()
+```
+Section 4: Get Predictors 
+```{r}
+###Merge Long and Lat into one column
+###This is so we can group counts by coordinate 
+Merged$Long_Lat<- paste(Merged$Longitude,Merged$Latitude, sep=",")
+
+#Put new data into Merged dataframe
+df<-data.frame(Merged,extract(el, Merged[,9:10]),extract(clim, Merged[,17:18]))
+rm(Merged,clim,el) #CLEAN UP
+gc()
+```
+
+Section 5:
+```{r}
+###Create count table by coordinate 
+data1<-as.data.frame(tabyl(df,Long_Lat,SNAME))
+
+###Get every unique coordinate 
+lst<-list()
+for(i in 1:nrow(data1)){
+  lst[i]<-as.character(data1$Long_Lat)[i]
+}
+
+###Find the predictor values by unique coordinate 
+options(warn=-1)
+data2<-matrix(ncol = length(lst), nrow=58) #empty matrix
+for(j in 1:length(lst)){
+  tmp<-df[which(df$Long_Lat == lst[j]),] #all the values
+  #You get multiple chords with the same values, take mean to compress into one row
+  tmp2<-apply(tmp[,20:length(tmp)],2,mean)
+  for(k in 1:58){
+    data2[,j][[k]]<-tmp2[k] #populate rows into matrix
+  }
+}
+rm(lst,tmp,tmp2)#CLEAN UP
+gc()
+
+###Put the predictors into the count table
+data<-data.frame(data1,t(data2))
+rm(data1,data2,i,j,k)#CLEAN UP
+gc()
+
+```
+
+```{r}
+
+###Save the file
+#write.csv(data, file ="C:/Forest_dataForest_Counts.csv")
+```
+
+
